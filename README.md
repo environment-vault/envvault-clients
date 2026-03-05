@@ -3,6 +3,7 @@
 Python client EnvVault — a self-hosted environment variable management system.
 
 ## Installation
+#### Python >= 3.10.11
 
 ```bash
 # From the project root

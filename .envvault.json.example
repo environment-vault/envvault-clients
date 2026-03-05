@@ -1,0 +1,7 @@
+{
+    "server_url": "http://localhost:8000",
+    "service_token": "PASTE_YOUR_SERVICE_TOKEN_HERE",
+    "project_id": "PASTE_YOUR_PROJECT_ID_HERE",
+    "environment": "dev",
+    "version_name": "v1"
+}

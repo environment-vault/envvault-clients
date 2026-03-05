@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "envvault"
+version = "0.1.0"
+description = "Python client SDK for EnvVault - Environment Variable Management"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+authors = [{ name = "Environment-vault Team" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+envvault = "envvault.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

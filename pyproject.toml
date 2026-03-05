@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Python client SDK for EnvVault - Environment Variable Management"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.8"
+requires-python = ">=3.10.11"
 authors = [{ name = "Environment-vault Team" }]
 dependencies = []
 

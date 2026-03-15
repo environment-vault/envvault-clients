@@ -13,7 +13,7 @@ pip install -e .
 pip install .
 
 # Or with pip github
-pip install git+https://github.com/environment-vault/envvault-clients.git
+pip install git+https://github.com/environment-vault/envvault-clients.git@0.2.0
 
 ```
 

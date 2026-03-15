@@ -1,34 +1,47 @@
 """
 EnvVault Python Client SDK
 
-Fetch secrets from your EnvVault server and inject them
-into your application as environment variables.
+Settings-first, list-based config loading. Configure credentials and fetch list,
+then load in minimal server requests. Values never logged; verbose shows key names only.
 
 Usage:
-    # Method 1: Auto-load into os.environ
-    from envvault import load_env
-    load_env(
-        server_url="http://localhost:8000",
-        service_token="evst_xxxxxxxx",
-        project_slug="my-project",
-        environment="dev",
-        version_name="v1",
-    )
+    # Config file (recommended)
+    from envvault import load_from_file
+    load_from_file(".envvault.json", verbose=True)
 
-    # Method 2: Get secrets as a dict
+    # Config dict (no file)
+    from envvault import load_from_config
+    load_from_config(config_dict, verbose=True)
+
+    # Individual loaders
+    from envvault import load_env, load_env_config, load_yaml_config
+    load_env(server_url="...", service_token="...", project_id="...", environment="dev")
+    load_env_config(..., name=".env")
+    config = load_yaml_config(..., name="config.yaml")
+
+    # Client API
     from envvault import EnvVaultClient
-    client = EnvVaultClient(
-        server_url="http://localhost:8000",
-        service_token="evst_xxxxxxxx",
-    )
-    secrets = client.get_secrets(project_slug="my-project", environment="dev", version_name="v2")
-
-    # Method 3: Generate a .env file
-    client.export_dotenv("my-project", "dev", path=".env", version_name="v1")
+    client = EnvVaultClient(server_url="...", service_token="...")
 """
 
-from envvault.client import EnvVaultClient
-from envvault.loader import load_env, load_env_from_file
+from envvault.client import EnvVaultClient, EnvVaultError
+from envvault.loader import (
+    Settings,
+    load_env,
+    load_env_config,
+    load_from_config,
+    load_from_file,
+    load_yaml_config,
+)
 
-__version__ = "0.1.0"
-__all__ = ["EnvVaultClient", "load_env", "load_env_from_file"]
+__version__ = "0.2.0"
+__all__ = [
+    "EnvVaultClient",
+    "EnvVaultError",
+    "Settings",
+    "load_env",
+    "load_env_config",
+    "load_from_config",
+    "load_from_file",
+    "load_yaml_config",
+]

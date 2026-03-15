@@ -17,7 +17,7 @@ import socket
 import ssl
 from typing import Any, Dict, List, Optional
 from pathlib import Path
-from urllib.parse import urlparse, urlencode
+from urllib.parse import urlparse, urlencode, quote
 
 
 class EnvVaultError(Exception):
@@ -227,7 +227,8 @@ class EnvVaultClient:
         if version_name:
             params["version_name"] = version_name
         data = self._request("GET", f"/secrets/{project_id}/{environment}", params=params)
-        return {item["key"]: item["value"] for item in data}
+        items = data.get("items", data) if isinstance(data, dict) else data
+        return {item["key"]: item["value"] for item in items}
 
     def get_secrets_raw(
         self,
@@ -246,7 +247,8 @@ class EnvVaultClient:
         params = {}
         if version_name:
             params["version_name"] = version_name
-        return self._request("GET", f"/secrets/{project_id}/{environment}", params=params)
+        data = self._request("GET", f"/secrets/{project_id}/{environment}", params=params)
+        return data.get("items", data) if isinstance(data, dict) else data
 
     def get_secret(
         self,
@@ -302,7 +304,210 @@ class EnvVaultClient:
         """Delete a secret by its ID."""
         self._request("DELETE", f"/secrets/{secret_id}")
 
-    # ── Export ────────────────────────────────────────────────────────
+    # ── Env Configs (.env files) ───────────────────────────────────────
+
+    def list_env_config_names(
+        self,
+        project_id: str,
+        environment: str,
+        version_name: Optional[str] = None,
+    ) -> List[str]:
+        """
+        List env config file names in a project environment.
+
+        Args:
+            project_id: Project ID
+            environment: Environment slug
+            version_name: Version name (e.g. 'v1'). If None, server default.
+
+        Returns:
+            List of env config names (e.g. ['.env', 'config.env'])
+        """
+        params = {}
+        if version_name:
+            params["version_name"] = version_name
+        data = self._request(
+            "GET", f"/env-configs/{project_id}/{environment}/names", params=params
+        )
+        return data.get("names", [])
+
+    def get_env_config(
+        self,
+        project_id: str,
+        environment: str,
+        name: str,
+        version_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch a .env config file content by name.
+
+        Args:
+            project_id: Project ID
+            environment: Environment slug
+            name: Config name (e.g. '.env', 'config.env')
+            version_name: Version name (e.g. 'v1'). If None, server default.
+
+        Returns:
+            Dict with id, project_id, environment_slug, name, content, etc.
+        """
+        params = {}
+        if version_name:
+            params["version_name"] = version_name
+        name_enc = quote(name, safe=".-_")
+        return self._request(
+            "GET", f"/env-configs/{project_id}/{environment}/{name_enc}", params=params
+        )
+
+    def export_env_config(
+        self,
+        project_id: str,
+        environment: str,
+        name: str = ".env",
+        path: str = ".env",
+        overwrite: bool = True,
+        version_name: Optional[str] = None,
+    ) -> Path:
+        """
+        Export an env config to a .env file.
+
+        Args:
+            project_id: Project ID
+            environment: Environment slug
+            name: Env config name in EnvVault (default: '.env')
+            path: Output file path
+            overwrite: Whether to overwrite existing file
+            version_name: Version name (e.g. 'v1'). If None, server default.
+
+        Returns:
+            Path to the created file
+        """
+        config = self.get_env_config(project_id, environment, name, version_name=version_name)
+        output = Path(path)
+        if output.exists() and not overwrite:
+            raise EnvVaultError(f"File {path} already exists. Set overwrite=True to replace.")
+        content = config.get("content", "")
+        output.write_text(content, encoding="utf-8")
+        return output
+
+    # ── YAML Configs ───────────────────────────────────────────────────
+
+    def list_yaml_config_names(
+        self,
+        project_id: str,
+        environment: str,
+        version_name: Optional[str] = None,
+    ) -> List[str]:
+        """
+        List YAML config file names in a project environment.
+
+        Args:
+            project_id: Project ID
+            environment: Environment slug
+            version_name: Version name (e.g. 'v1'). If None, server default.
+
+        Returns:
+            List of YAML config names
+        """
+        params = {}
+        if version_name:
+            params["version_name"] = version_name
+        data = self._request(
+            "GET", f"/yaml-configs/{project_id}/{environment}/names", params=params
+        )
+        return data.get("names", [])
+
+    def get_yaml_config(
+        self,
+        project_id: str,
+        environment: str,
+        name: str,
+        version_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch a YAML config file content by name.
+
+        Args:
+            project_id: Project ID
+            environment: Environment slug
+            name: Config name (e.g. 'config.yaml', 'settings.yml')
+            version_name: Version name (e.g. 'v1'). If None, server default.
+
+        Returns:
+            Dict with id, project_id, environment_slug, name, content, etc.
+        """
+        params = {}
+        if version_name:
+            params["version_name"] = version_name
+        name_enc = quote(name, safe=".-_")
+        return self._request(
+            "GET", f"/yaml-configs/{project_id}/{environment}/{name_enc}", params=params
+        )
+
+    def get_yaml_config_parsed(
+        self,
+        project_id: str,
+        environment: str,
+        name: str,
+        version_name: Optional[str] = None,
+    ) -> Any:
+        """
+        Fetch a YAML config and parse it as a Python dict/list.
+
+        Requires PyYAML: pip install pyyaml
+
+        Args:
+            project_id: Project ID
+            environment: Environment slug
+            name: Config name
+            version_name: Version name. If None, server default.
+
+        Returns:
+            Parsed YAML as dict or list
+        """
+        try:
+            import yaml
+        except ImportError:
+            raise EnvVaultError(
+                "PyYAML required for get_yaml_config_parsed. Install with: pip install pyyaml"
+            )
+        config = self.get_yaml_config(project_id, environment, name, version_name=version_name)
+        content = config.get("content", "")
+        return yaml.safe_load(content) if content else {}
+
+    def export_yaml_config(
+        self,
+        project_id: str,
+        environment: str,
+        name: str,
+        path: Optional[str] = None,
+        overwrite: bool = True,
+        version_name: Optional[str] = None,
+    ) -> Path:
+        """
+        Export a YAML config to a file.
+
+        Args:
+            project_id: Project ID
+            environment: Environment slug
+            name: YAML config name in EnvVault
+            path: Output file path (default: same as name)
+            overwrite: Whether to overwrite existing file
+            version_name: Version name. If None, server default.
+
+        Returns:
+            Path to the created file
+        """
+        config = self.get_yaml_config(project_id, environment, name, version_name=version_name)
+        output = Path(path or name)
+        if output.exists() and not overwrite:
+            raise EnvVaultError(
+                f"File {output} already exists. Set overwrite=True to replace."
+            )
+        content = config.get("content", "")
+        output.write_text(content, encoding="utf-8")
+        return output
+
+    # ── Export (secrets → .env) ────────────────────────────────────────
 
     def export_dotenv(
         self,

@@ -4,13 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "envvault"
-version = "0.2.0"
+version = "0.2.1"
 description = "Python client SDK for EnvVault - Environment Variable Management"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10.11"
 authors = [{ name = "Environment-vault Team" }]
+keywords = ["envvault", "secrets", "environment-variables", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/environment-vault/envvault-clients"
+Repository = "https://github.com/environment-vault/envvault-clients"
+Documentation = "https://github.com/environment-vault/envvault-clients"
 
 [project.optional-dependencies]
 yaml = ["pyyaml>=6.0"]

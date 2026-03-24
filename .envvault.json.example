@@ -1,7 +1,13 @@
 {
-    "server_url": "http://localhost:8000",
-    "service_token": "PASTE_YOUR_SERVICE_TOKEN_HERE",
-    "project_id": "PASTE_YOUR_PROJECT_ID_HERE",
-    "environment": "dev",
-    "version_name": "v1"
+  "server_url": "http://localhost:8000",
+  "service_token": null,
+  "project_id": "PASTE_YOUR_PROJECT_ID_HERE",
+  "environment": "dev",
+  "version_name": "v1",
+  "fetch": {
+    "env_config_names": [".env"],
+    "yaml_config_names": []
+  },
+  "yaml_inject_to_env": false,
+  "yaml_env_prefix": ""
 }

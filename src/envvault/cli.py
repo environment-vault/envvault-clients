@@ -3,10 +3,11 @@ EnvVault CLI — Simple command-line interface for managing secrets.
 env configs (.env files), and YAML configs.
 
 Usage:
-    envvault fetch --project-id <id> --env <env>
-    envvault export --project-id <id> --env <env> --output .env
-    envvault env-config get|dist --project-id <id> --env <env> --name .env
+    envvault [--no-verify-ssl|-k] [--ca-bundle PATH] fetch --project-id <id> --env <env>
+    envvault export --project-id <id> --env <env> [--output .env | --stdout]
+    envvault env-config get|dist --project-id <id> --env <env> [--name .env] [--stdout]
     envvault yaml-config get|dist --project-id <id> --env <env> --name config.yaml
+    envvault run --project-id <id> --env <env> [--name .env] -- <command> ...
 """
 
 from __future__ import annotations
@@ -34,6 +35,18 @@ def main():
         default=os.environ.get("ENVVAULT_SERVICE_TOKEN"),
         help="Service token (default: ENVVAULT_SERVICE_TOKEN env var)",
     )
+    parser.add_argument(
+        "--no-verify-ssl",
+        "-k",
+        action="store_true",
+        help="Skip TLS certificate verification for HTTPS (insecure)",
+    )
+    parser.add_argument(
+        "--ca-bundle",
+        metavar="PATH",
+        default=None,
+        help="Path to PEM CA bundle for HTTPS (default: ENVVAULT_CA_BUNDLE if set)",
+    )
 
     sub = parser.add_subparsers(dest="command", help="Command to run")
 
@@ -48,7 +61,12 @@ def main():
     export_parser.add_argument("--project-id", "-p", required=True, help="Project ID")
     export_parser.add_argument("--env", "-e", default="dev", help="Environment slug")
     export_parser.add_argument("--version", "-v", default=None, dest="version_name", help="Version name (e.g. v1, v2)")
-    export_parser.add_argument("--output", "-o", default=".env", help="Output file path")
+    export_parser.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print dotenv text to stdout (no file). Use with: set -a && source <(envvault export ... --stdout) && set +a",
+    )
+    export_parser.add_argument("--output", "-o", default=".env", help="Output file path (ignored with --stdout)")
 
     # ── env-config ────────────────────────────────────────────────
     env_config = sub.add_parser("env-config", help="Env config (.env file) commands")
@@ -64,7 +82,12 @@ def main():
     ec_dist.add_argument("--project-id", "-p", required=True, help="Project ID")
     ec_dist.add_argument("--env", "-e", default="dev", help="Environment slug")
     ec_dist.add_argument("--name", "-n", default=".env", help="Env config name")
-    ec_dist.add_argument("--output", "-o", default=".env", help="Output file path")
+    ec_dist.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print env config content to stdout (no file)",
+    )
+    ec_dist.add_argument("--output", "-o", default=".env", help="Output file path (ignored with --stdout)")
     ec_dist.add_argument("--version", "-v", default=None, dest="version_name", help="Version name")
 
     # ── yaml-config ───────────────────────────────────────────────
@@ -85,10 +108,20 @@ def main():
     yc_dist.add_argument("--version", "-v", default=None, dest="version_name", help="Version name")
 
     # ── run ───────────────────────────────────────────────────────
-    run_parser = sub.add_parser("run", help="Run a command with secrets injected as env vars")
+    run_parser = sub.add_parser(
+        "run",
+        help="Run a command with env vars injected (secrets or a named env config)",
+    )
     run_parser.add_argument("--project-id", "-p", required=True, help="Project ID")
     run_parser.add_argument("--env", "-e", default="dev", help="Environment slug")
     run_parser.add_argument("--version", "-v", default=None, dest="version_name", help="Version name (e.g. v1, v2)")
+    run_parser.add_argument(
+        "--name",
+        "-n",
+        default=None,
+        metavar="ENV_CONFIG",
+        help="Named env config to inject (e.g. .env) instead of key-value secrets",
+    )
     run_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to run")
 
     args = parser.parse_args()
@@ -97,20 +130,48 @@ def main():
         parser.print_help()
         sys.exit(1)
 
+    if args.no_verify_ssl and args.ca_bundle:
+        parser.error("--no-verify-ssl and --ca-bundle are mutually exclusive")
+
+    ca_from_env = os.environ.get("ENVVAULT_CA_BUNDLE")
+    verify_ssl: bool | str = True
+    if args.no_verify_ssl:
+        verify_ssl = False
+    elif args.ca_bundle is not None:
+        verify_ssl = args.ca_bundle
+    elif ca_from_env:
+        verify_ssl = ca_from_env
+    else:
+        flag = os.environ.get("ENVVAULT_VERIFY_SSL", "").strip().lower()
+        if flag in ("0", "false", "no", "off"):
+            verify_ssl = False
+
     if not args.token:
         print("Error: Service token required. Set ENVVAULT_SERVICE_TOKEN or use --token", file=sys.stderr)
         sys.exit(1)
-
     try:
-        client = EnvVaultClient(server_url=args.server, service_token=args.token)
+        client = EnvVaultClient(
+            server_url=args.server,
+            service_token=args.token,
+            verify_ssl=verify_ssl,
+        )
 
         def fetch():
             secrets = client.get_secrets(args.project_id, args.env, version_name=args.version_name)
             print(json.dumps(secrets, indent=2))
 
         def export():
-            path = client.export_dotenv(args.project_id, args.env, path=args.output, version_name=args.version_name)
-            print(f"Exported {args.env} secrets to {path}")
+            if args.stdout:
+                sys.stdout.write(
+                    client.render_secrets_dotenv(
+                        args.project_id, args.env, version_name=args.version_name
+                    )
+                )
+                return
+            path = client.export_dotenv(
+                args.project_id, args.env, path=args.output, version_name=args.version_name
+            )
+            print(f"Exported {args.env} secrets to {path}", file=sys.stderr)
 
         def env_config_cmd():
             if not getattr(args, "env_config_cmd", None):
@@ -122,11 +183,23 @@ def main():
                 )
                 print(config.get("content", ""))
             elif args.env_config_cmd == "dist":
+                if getattr(args, "stdout", False):
+                    cfg = client.get_env_config(
+                        args.project_id,
+                        args.env,
+                        args.name,
+                        version_name=args.version_name,
+                    )
+                    content = cfg.get("content", "")
+                    sys.stdout.write(content)
+                    if content and not content.endswith("\n"):
+                        sys.stdout.write("\n")
+                    return
                 path = client.export_env_config(
                     args.project_id, args.env, name=args.name,
                     path=args.output, version_name=args.version_name,
                 )
-                print(f"Distributed env config '{args.name}' to {path}")
+                print(f"Distributed env config '{args.name}' to {path}", file=sys.stderr)
 
         def yaml_config_cmd():
             if not getattr(args, "yaml_config_cmd", None):
@@ -152,21 +225,34 @@ def main():
             cmd = args.cmd
             if cmd and cmd[0] == "--":
                 cmd = cmd[1:]
-            # Inject secrets into env
-            secrets = client.get_secrets(args.project_id, args.env, version_name=args.version_name)
+            # Inject secrets or parsed env config into env
+            if getattr(args, "name", None):
+                from envvault.loader import _parse_env_content
+
+                raw = client.get_env_config(
+                    args.project_id,
+                    args.env,
+                    args.name,
+                    version_name=args.version_name,
+                )
+                injected = _parse_env_content(raw.get("content", ""))
+            else:
+                injected = client.get_secrets(
+                    args.project_id, args.env, version_name=args.version_name
+                )
             env = os.environ.copy()
-            env.update(secrets)
+            env.update(injected)
             # Execute command
             os.execvpe(cmd[0], cmd, env)
 
-        command_map = {
-            "fetch": fetch(),
-            "export": export(),
-            "env-config": env_config_cmd(),
-            "yaml-config": yaml_config_cmd(),
-            "run": run_cmd(),
+        handlers = {
+            "fetch": fetch,
+            "export": export,
+            "env-config": env_config_cmd,
+            "yaml-config": yaml_config_cmd,
+            "run": run_cmd,
         }
-        command_map.get(args.command)
+        handlers[args.command]()
     except EnvVaultError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

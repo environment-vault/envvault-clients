@@ -34,7 +34,12 @@ from envvault.loader import (
     load_yaml_config,
 )
 
-__version__ = "0.2.0"
+try:
+    from importlib.metadata import PackageNotFoundError, version as _package_version
+
+    __version__ = _package_version("envvault")
+except PackageNotFoundError:
+    __version__ = "0.2.1"
 __all__ = [
     "EnvVaultClient",
     "EnvVaultError",

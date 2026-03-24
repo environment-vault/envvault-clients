@@ -1,9 +1,9 @@
 """
-EnvVault Loader — Settings-first, cached loading.
+EnvVault loader — settings-first, short-TTL cache.
 
-1. One place: Settings.configure() or Settings.from_file()
-2. Anywhere: load_env_config(name=".env"), load_yaml_config(name="config.yaml")
-3. 5-second cache: if the last request is less than 5 seconds, use the cache; otherwise, fetch a new request.
+1. Configure once: ``Settings.configure()`` or ``Settings.from_file()``.
+2. Use anywhere: ``load_env_config(name=".env")``, ``load_yaml_config(name="config.yaml")``.
+3. Default cache TTL is 5s; adjust with ``Settings.cache_ttl``.
 """
 
 from __future__ import annotations
@@ -19,12 +19,12 @@ from envvault.client import EnvVaultClient, EnvVaultError
 
 
 def _mask_dict(data: dict[str, str], mask: str = "***") -> dict[str, str]:
-    """Mask sensitive values (flat dict)."""
+    """Mask every value in a flat string dict (for safe display)."""
     return {k: mask for k in data}
 
 
 def _mask_any(data: Any, mask: str = "***") -> Any:
-    """Mask sensitive values (nested dict/list)."""
+    """Recursively mask string/scalar leaves in dicts and lists."""
     if isinstance(data, dict):
         return {k: _mask_any(v, mask) for k, v in data.items()}
     if isinstance(data, list):
@@ -34,11 +34,56 @@ def _mask_any(data: Any, mask: str = "***") -> Any:
     return data
 
 
+def _load_config_file_or_dict(
+    config_path: Optional[str],
+    config: Optional[dict],
+) -> dict:
+    """Load JSON from path or return a shallow copy of ``config``."""
+    if config is not None:
+        return dict(config)
+    path = Path(config_path or ".envvault.json")
+    if not path.exists():
+        raise EnvVaultError(f"Config file not found: {path}")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _service_token_from_dict(c: dict) -> str:
+    token = c.get("service_token") or os.environ.get("ENVVAULT_SERVICE_TOKEN")
+    if not token:
+        raise EnvVaultError("service_token required in config or set ENVVAULT_SERVICE_TOKEN")
+    return token
+
+
+def _client_params_from_config_dict(
+    c: dict,
+    verify_ssl_fallback: bool | str,
+) -> tuple[str, str, str, str, Optional[str], bool | str]:
+    """Return (server_url, token, project_id, environment, version_name, verify_ssl)."""
+    server_url = c.get("server_url")
+    project_id = c.get("project_id")
+    if not server_url or not project_id:
+        raise EnvVaultError("server_url and project_id required in config")
+    token = _service_token_from_dict(c)
+    environment = c.get("environment", "dev")
+    version_name = c.get("version_name")
+    verify_ssl = c.get("verify_ssl", verify_ssl_fallback)
+    return server_url, token, project_id, environment, version_name, verify_ssl
+
+
+def _client_from_resolved(
+    server_url: str,
+    token: str,
+    verify_ssl: bool | str,
+) -> EnvVaultClient:
+    return EnvVaultClient(server_url=server_url, service_token=token, verify_ssl=verify_ssl)
+
+
 class _Settings:
-    """Global settings + cache. Configure once, use everywhere."""
+    """Process-wide settings and response cache. Configure once, reuse everywhere."""
 
     cache_ttl: float = 5.0
-    mask_values: bool = False  # mặc định tắt, bật thì ẩn giá trị khi return
+    mask_values: bool = False  # when True, loaders may return masked values instead of secrets
 
     def __init__(self) -> None:
         self._config: Optional[dict] = None
@@ -149,7 +194,7 @@ class _Settings:
             )
 
     def get_env_config(self, name: str = ".env", config_path: str = ".envvault.json") -> dict[str, str]:
-        """Fetch env config. First attempt: request. Second attempt (< 5s): cache, no request."""
+        """Fetch parsed .env config; uses cache when still fresh (see ``cache_ttl``)."""
         self._ensure_configured(config_path)
         key = f"env_config:{name}"
         if not self._is_expired(key):
@@ -165,7 +210,7 @@ class _Settings:
         return parsed
 
     def get_yaml_config(self, name: str = "config.yaml", config_path: str = ".envvault.json") -> Any:
-        """Fetch YAML config. First attempt: request. Second attempt (< 5s): cache, no request."""
+        """Fetch parsed YAML config; uses cache when still fresh (see ``cache_ttl``)."""
         self._ensure_configured(config_path)
         key = f"yaml_config:{name}"
         if not self._is_expired(key):
@@ -180,7 +225,7 @@ class _Settings:
         return data
 
     def get_secrets(self, config_path: str = ".envvault.json") -> dict[str, str]:
-        """Fetch secrets. First attempt: request. Second attempt (< 5s): cache, no request."""
+        """Fetch secrets map; uses cache when still fresh (see ``cache_ttl``)."""
         self._ensure_configured(config_path)
         key = "secrets"
         if not self._is_expired(key):
@@ -237,7 +282,7 @@ def _inject_to_env(
     override: bool,
     verbose: bool,
 ) -> dict[str, str]:
-    """Inject key-value into os.environ. verbose: print key names only (never values)."""
+    """Merge into ``os.environ``; if ``verbose``, print key names only (never values)."""
     loaded = {}
     for key in data:
         if override or key not in os.environ:
@@ -254,46 +299,33 @@ def load_from_file(
     config_path: str = ".envvault.json",
     override: bool = False,
     verbose: bool = False,
-    verify_ssl: bool | str = True,
+    verify_ssl: bool | str | None = None,
 ) -> dict[str, Any]:
     """
-    Load from config file. Settings-first: credentials and fetch list in config.
-    Only fetches what is in fetch.env_config_names and fetch.yaml_config_names.
-    Never logs or prints sensitive values; verbose shows key names only.
+    Load from a JSON config file (single read), apply settings, and inject per ``fetch``.
 
-    Config format:
-    {
-        "server_url": "http://localhost:8000",
-        "service_token": null,
-        "project_id": "abc123",
-        "environment": "dev",
-        "version_name": "v1",
-        "fetch": {
-            "secrets": true,
-            "env_config_names": [".env"],
-            "yaml_config_names": []
-        },
-        "yaml_inject_to_env": false,
-        "yaml_env_prefix": ""
-    }
+    Only requests resources listed under ``fetch`` (secrets, named env configs, named YAML).
+    Never logs secret values; with ``verbose=True`` only key names are printed.
 
-    - service_token: use ENVVAULT_SERVICE_TOKEN env if null
-    - fetch.secrets: fetch key-value secrets (1 request)
-    - fetch.env_config_names: fetch these .env configs (1 request each)
-    - fetch.yaml_config_names: fetch these YAML configs (1 request each)
-    - yaml_inject_to_env: if true, flatten YAML and inject into os.environ
-    - yaml_env_prefix: prefix for YAML-injected env vars
+    Config shape (see ``.envvault.json.example``):
+
+    - ``service_token``: omit or null and set ``ENVVAULT_SERVICE_TOKEN``
+    - ``fetch.secrets``: if true, one request for key-value secrets
+    - ``fetch.env_config_names``: list of named .env configs (one request each)
+    - ``fetch.yaml_config_names``: list of YAML configs (one request each)
+    - ``yaml_inject_to_env`` / ``yaml_env_prefix``: optional flatten-and-inject for YAML
 
     Returns:
-        {"loaded_keys": [...], "yaml": {name: dict}} — loaded key names and YAML data.
-        Do not log the return value (may contain sensitive data).
+        ``{"loaded_keys": [...], "yaml": {name: data}}``. Do not log this dict in production.
+
+    Args:
+        verify_ssl: If not ``None``, overrides ``verify_ssl`` from the file for this run.
     """
     path = Path(config_path)
     if not path.exists():
         raise EnvVaultError(f"Config file not found: {config_path}")
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         cfg = json.load(f)
-    Settings.from_file(config_path)
     return load_from_config(cfg, override=override, verbose=verbose, verify_ssl=verify_ssl)
 
 
@@ -301,16 +333,24 @@ def load_from_config(
     config: dict,
     override: bool = False,
     verbose: bool = False,
-    verify_ssl: bool | str = True,
+    verify_ssl: bool | str | None = None,
 ) -> dict[str, Any]:
     """
-        Configures Settings, prefetches according to fetch list, inject into os.environ. 
-        Only fetch what is in fetch.secrets, fetch.env_config_names, fetch.yaml_config_names.
+    Apply ``config`` to ``Settings``, prefetch per ``fetch``, and inject into ``os.environ``.
+
+    Only fetches ``fetch.secrets``, each name in ``fetch.env_config_names``, and each YAML name
+    in ``fetch.yaml_config_names``.
+
+    Args:
+        verify_ssl: If not ``None``, overrides the value from ``config`` before connecting.
     """
-    Settings._apply_config(config)
-    fetch = config.get("fetch", {})
-    yaml_inject = config.get("yaml_inject_to_env", False)
-    yaml_prefix = config.get("yaml_env_prefix", "")
+    cfg = dict(config)
+    if verify_ssl is not None:
+        cfg["verify_ssl"] = verify_ssl
+    Settings._apply_config(cfg)
+    fetch = cfg.get("fetch", {})
+    yaml_inject = cfg.get("yaml_inject_to_env", False)
+    yaml_prefix = cfg.get("yaml_env_prefix", "")
     all_loaded: dict[str, str] = {}
     yaml_data: dict[str, Any] = {}
 
@@ -349,27 +389,33 @@ def load_env(
     config: Optional[dict] = None,
 ) -> dict[str, str]:
     """
-        Get the secrets. Use Settings (cache 5 seconds) if configured.
-        Initialization location: Settings.from_file(".envvault.json")
-        Everywhere: load_env()
+    Fetch project secrets and optionally inject into ``os.environ``.
+
+    If ``Settings`` is already configured and you pass no credentials or config file, uses the
+    cached ``Settings`` client (see ``Settings.cache_ttl``).
+
+    Otherwise pass explicit ``server_url`` / ``project_id`` / ``service_token``, or
+    ``config_path`` / ``config`` to build a one-off client.
     """
     if server_url is None and project_id is None and not config_path and not config:
         data = Settings.get_secrets()
         return _inject_to_env(data, override, verbose)
 
     if config_path or config:
-        c = config or json.load(open(Path(config_path or ".envvault.json")))
-        server_url = c.get("server_url")
-        service_token = c.get("service_token") or os.environ.get("ENVVAULT_SERVICE_TOKEN")
-        project_id = c.get("project_id")
-        environment = c.get("environment", "dev")
-        version_name = c.get("version_name")
-        verify_ssl = c.get("verify_ssl", verify_ssl)
+        c = _load_config_file_or_dict(config_path, config)
+        server_url, token, project_id, environment, version_name, verify_ssl = _client_params_from_config_dict(
+            c, verify_ssl
+        )
+        client = _client_from_resolved(server_url, token, verify_ssl)
+        secrets = client.get_secrets(project_id, environment, version_name=version_name)
+        return _inject_to_env(secrets, override, verbose)
 
-    if not project_id or not server_url or not (service_token or os.environ.get("ENVVAULT_SERVICE_TOKEN")):
-        raise EnvVaultError("project_id, server_url, service_token required (or call Settings.from_file() first)")
     token = service_token or os.environ.get("ENVVAULT_SERVICE_TOKEN")
-    client = EnvVaultClient(server_url=server_url, service_token=token, verify_ssl=verify_ssl)
+    if not project_id or not server_url or not token:
+        raise EnvVaultError(
+            "project_id, server_url, and service_token required (or configure Settings / pass config_path)"
+        )
+    client = _client_from_resolved(server_url, token, verify_ssl)
     secrets = client.get_secrets(project_id, environment, version_name=version_name)
     return _inject_to_env(secrets, override, verbose)
 
@@ -390,9 +436,10 @@ def load_env_config(
     config: Optional[dict] = None,
 ) -> dict[str, str]:
     """
-        Get the environment configuration. Use Settings (cache 5 seconds) if already configured.
-        Returns a key-value dictionary. This can be injected into os.environ via override.
-        mask_values: None = use Settings.mask_values; True = hide the value; False = return the full value (default)
+    Fetch a named .env-style config, parse to a dict, optionally inject into ``os.environ``.
+
+    Uses ``Settings`` and cache when no explicit credentials or config file are passed.
+    ``mask_values``: ``None`` follows ``Settings.mask_values``; ``True`` returns ``"***"`` per key.
     """
     use_mask = mask_values if mask_values is not None else Settings.mask_values
     if server_url is None and project_id is None and not config_path and not config:
@@ -401,18 +448,22 @@ def load_env_config(
         return _mask_dict(data) if use_mask else data
 
     if config_path or config:
-        c = config or json.load(open(Path(config_path or ".envvault.json")))
-        server_url = c.get("server_url")
-        service_token = c.get("service_token") or os.environ.get("ENVVAULT_SERVICE_TOKEN")
-        project_id = c.get("project_id")
-        environment = c.get("environment", "dev")
-        version_name = c.get("version_name")
-        verify_ssl = c.get("verify_ssl", verify_ssl)
+        c = _load_config_file_or_dict(config_path, config)
+        server_url, token, project_id, environment, version_name, verify_ssl = _client_params_from_config_dict(
+            c, verify_ssl
+        )
+        client = _client_from_resolved(server_url, token, verify_ssl)
+        raw = client.get_env_config(project_id, environment, name, version_name=version_name)
+        parsed = _parse_env_content(raw.get("content", ""))
+        _inject_to_env(parsed, override, verbose)
+        return _mask_dict(parsed) if use_mask else parsed
 
-    if not project_id or not server_url or not (service_token or os.environ.get("ENVVAULT_SERVICE_TOKEN")):
-        raise EnvVaultError("project_id, server_url, service_token required (or call Settings.from_file() first)")
     token = service_token or os.environ.get("ENVVAULT_SERVICE_TOKEN")
-    client = EnvVaultClient(server_url=server_url, service_token=token, verify_ssl=verify_ssl)
+    if not project_id or not server_url or not token:
+        raise EnvVaultError(
+            "project_id, server_url, and service_token required (or configure Settings / pass config_path)"
+        )
+    client = _client_from_resolved(server_url, token, verify_ssl)
     cfg = client.get_env_config(project_id, environment, name, version_name=version_name)
     parsed = _parse_env_content(cfg.get("content", ""))
     _inject_to_env(parsed, override, verbose)
@@ -437,9 +488,10 @@ def load_yaml_config(
     config: Optional[dict] = None,
 ) -> Any:
     """
-        Get YAML config. Use Settings (cache 5 seconds) if already configured.
-        Returns a dict. Can be injected into os.environ (inject_to_env=True).
-        mask_values: None = use Settings.mask_values; True = hide the value; False = return the full value (default)
+    Fetch and parse a YAML config. Optionally flatten dict values into ``os.environ``.
+
+    With ``config_path`` / ``config``, file keys ``yaml_inject_to_env`` and ``yaml_env_prefix``
+    apply when not overridden by function arguments.
     """
     use_mask = mask_values if mask_values is not None else Settings.mask_values
     if server_url is None and project_id is None and not config_path and not config:
@@ -451,21 +503,26 @@ def load_yaml_config(
         return _mask_any(data) if use_mask else data
 
     if config_path or config:
-        c = config or json.load(open(Path(config_path or ".envvault.json")))
-        server_url = c.get("server_url")
-        service_token = c.get("service_token") or os.environ.get("ENVVAULT_SERVICE_TOKEN")
-        project_id = c.get("project_id")
-        environment = c.get("environment", "dev")
-        version_name = c.get("version_name")
-        verify_ssl = c.get("verify_ssl", verify_ssl)
-        inject_to_env = inject_to_env or c.get("yaml_inject_to_env", False)
+        c = _load_config_file_or_dict(config_path, config)
+        server_url, token, project_id, environment, version_name, verify_ssl = _client_params_from_config_dict(
+            c, verify_ssl
+        )
+        inject_to_env = inject_to_env or bool(c.get("yaml_inject_to_env", False))
         if env_prefix == "":
-            env_prefix = c.get("yaml_env_prefix", "")
+            env_prefix = c.get("yaml_env_prefix", "") or ""
+        client = _client_from_resolved(server_url, token, verify_ssl)
+        data = client.get_yaml_config_parsed(project_id, environment, name, version_name=version_name)
+        if inject_to_env and isinstance(data, dict):
+            flat = _flatten_yaml_to_env(data, env_prefix=env_prefix)
+            _inject_to_env(flat, override, verbose)
+        return _mask_any(data) if use_mask else data
 
-    if not project_id or not server_url or not (service_token or os.environ.get("ENVVAULT_SERVICE_TOKEN")):
-        raise EnvVaultError("project_id, server_url, service_token required (or call Settings.from_file() first)")
     token = service_token or os.environ.get("ENVVAULT_SERVICE_TOKEN")
-    client = EnvVaultClient(server_url=server_url, service_token=token, verify_ssl=verify_ssl)
+    if not project_id or not server_url or not token:
+        raise EnvVaultError(
+            "project_id, server_url, and service_token required (or configure Settings / pass config_path)"
+        )
+    client = _client_from_resolved(server_url, token, verify_ssl)
     data = client.get_yaml_config_parsed(project_id, environment, name, version_name=version_name)
     if inject_to_env and isinstance(data, dict):
         flat = _flatten_yaml_to_env(data, env_prefix=env_prefix)

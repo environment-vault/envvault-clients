@@ -22,7 +22,7 @@ pip install -e .
 pip install .
 
 # Or with pip github
-pip install git+https://github.com/environment-vault/envvault-clients.git@0.2.0
+pip install git+https://github.com/environment-vault/envvault-clients.git@0.2.1
 
 ```
 
@@ -36,9 +36,10 @@ from envvault import Settings
 Settings.from_file(".envvault.json")
 # or
 Settings.configure( 
-server_url="http://localhost:8000", 
+server_url="https://localhost:8000", 
 project_id="abc123", 
-service_token="evst_xxx", 
+service_token="evst_xxx",
+verify_ssl: False,
 environment="dev",
 )
 ```

@@ -57,7 +57,6 @@ config = load_yaml_config(name="config.yaml")
 "version_name": "v1"
 "fetch": {"env_config_names": [".env"], "yaml_config_names": ["app"]},
 }
-}
 ```
 
 `service_token`: use `ENVVAULT_SERVICE_TOKEN` if left `null`.
